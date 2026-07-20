@@ -1,0 +1,19 @@
+# Saida de build do Quarto -- reproduzivel, nao versionar
+_site/
+_freeze/
+.quarto/
+*_files/
+
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# SO
+Thumbs.db
+.DS_Store
+
+# Snapshots datados da ANM. Sao pequenos (1,7 MB) e sao a materia-prima do
+# projeto -- por isso, ao contrario dos outros dois, ELES FICAM versionados,
+# junto dos .sha256. E a comparacao entre snapshots que sustenta a tese.

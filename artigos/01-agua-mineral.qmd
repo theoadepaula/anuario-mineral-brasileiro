@@ -1,0 +1,257 @@
+---
+title: "A água mineral trocou de embalagem — e a conta é de plástico"
+subtitle: "Quinze anos de produção declarada mostram o garrafão retornável cedendo espaço para a garrafa descartável"
+date: last-modified
+categories: [dados abertos, resíduos sólidos, série histórica, mineração]
+lang: pt-BR
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(ggplot2)
+library(scales)
+library(gt)
+library(ggiraph)
+source(here::here("code", "tema.R"))
+
+agua <- read_parquet(dados("agua_mineral.parquet"))
+
+ANO_INI <- min(agua$ano); ANO_FIM <- max(agua$ano)
+
+# 3 series: o resto do detalhe de embalagem e residual e vira "Outras"
+agua3 <- agua |>
+  mutate(grupo = case_when(
+    embalagem == "Garrafão"         ~ "Garrafão",
+    embalagem == "Garrafa plástica" ~ "Garrafa plástica",
+    TRUE                            ~ "Outras"
+  ))
+
+share <- agua3 |>
+  group_by(ano, grupo) |>
+  summarise(litros = sum(litros), .groups = "drop_last") |>
+  mutate(pct = 100 * litros / sum(litros)) |>
+  ungroup()
+
+pega <- function(g, a) share$pct[share$grupo == g & share$ano == a]
+
+preco25 <- agua |>
+  filter(ano == ANO_FIM) |>
+  group_by(embalagem) |>
+  summarise(rs_l = sum(valor_rs) / sum(litros), .groups = "drop")
+
+p_garrafao  <- preco25$rs_l[preco25$embalagem == "Garrafão"]
+p_plastica  <- preco25$rs_l[preco25$embalagem == "Garrafa plástica"]
+
+vol_ano <- agua |> group_by(ano) |> summarise(bi = sum(litros) / 1e9, .groups = "drop")
+v <- function(a) vol_ano$bi[vol_ano$ano == a]
+
+sp <- agua |> filter(uf == "SP") |> group_by(ano) |>
+  summarise(bi = sum(litros) / 1e9, .groups = "drop")
+sp_v <- function(a) sp$bi[sp$ano == a]
+```
+
+O Anuário Mineral Brasileiro classifica água mineral como substância
+mineral, e por isso ela aparece numa base de mineração. O efeito
+colateral é útil: é o único conjunto de dados públicos que registra, ano
+a ano e por estado, **em que embalagem a água mineral brasileira foi
+vendida**.
+
+Isso transforma uma estatística de mineração em uma estatística de
+resíduo sólido. Garrafão de 20 litros é vasilhame retornável, usado
+dezenas de vezes. Garrafa plástica é PET de uso único, que entra na
+coleta no dia seguinte. A distinção não é de conforto do consumidor — é
+de quanto plástico chega ao aterro.
+
+## O deslocamento
+
+```{r}
+#| label: fig-share
+#| fig-height: 4.2
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de linhas da participação de cada tipo de embalagem no volume nacional de água mineral entre 2010 e 2025. O garrafão cai de cerca de 76% para 70% e a garrafa plástica sobe de cerca de 22% para 28%, com um cruzamento abrupto em 2024."
+rot <- share |> filter(ano == ANO_FIM)
+
+p <- ggplot(share, aes(ano, pct, colour = grupo)) +
+  geom_line(linewidth = 0.9) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", ano, "</b><br>", grupo, ": ",
+                         n_br(pct, 1), "% do volume"),
+        data_id = grupo),
+    size = 2.2
+  ) +
+  geom_text(
+    data = rot, aes(label = paste0(grupo, " ", number(pct, accuracy = 0.1, decimal.mark = ","), "%")),
+    hjust = 0, nudge_x = 0.25, size = 3.4, fontface = "bold", show.legend = FALSE
+  ) +
+  scale_colour_manual(values = unname(PAL[c(2, 1, 3)])) +
+  scale_x_continuous(breaks = seq(ANO_INI, ANO_FIM, 5), limits = c(ANO_INI, ANO_FIM + 5.5)) +
+  scale_y_continuous(labels = label_percent(scale = 1, accuracy = 1), limits = c(0, 100)) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "O garrafão perde espaço para a garrafa descartável",
+    subtitle = "Participação de cada embalagem no volume nacional de água mineral",
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ", SNAPSHOT, ".")
+  )
+
+interativo(p, altura = 4.2)
+```
+
+Entre `r ANO_INI` e `r ANO_FIM` o garrafão caiu de
+**`r number(pega("Garrafão", ANO_INI), accuracy = 0.1, decimal.mark = ",")`%**
+para
+**`r number(pega("Garrafão", ANO_FIM), accuracy = 0.1, decimal.mark = ",")`%**
+do volume nacional. A garrafa plástica subiu de
+**`r number(pega("Garrafa plástica", ANO_INI), accuracy = 0.1, decimal.mark = ",")`%**
+para
+**`r number(pega("Garrafa plástica", ANO_FIM), accuracy = 0.1, decimal.mark = ",")`%**
+—
+`r number(pega("Garrafa plástica", ANO_FIM) - pega("Garrafa plástica", ANO_INI), accuracy = 0.1, decimal.mark = ",")`
+pontos percentuais.
+
+Seis pontos percentuais parecem pouco. Não são: o volume total quase
+triplicou no período, de
+`r number(v(ANO_INI), accuracy = 0.1, decimal.mark = ",")` bilhões de
+litros para `r number(v(ANO_FIM), accuracy = 0.1, decimal.mark = ",")`
+bilhões. Uma fatia maior de um bolo muito maior significa que o volume
+absoluto embalado em plástico de uso único cresceu bem mais rápido que o
+mercado.
+
+## Por que o deslocamento acontece
+
+```{r}
+#| label: fig-preco
+#| fig-height: 3.2
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de barras horizontais do preço médio por litro de água mineral em 2025, por tipo de embalagem. O garrafão custa cerca de 0,19 reais por litro e a garrafa plástica cerca de 1,34."
+preco_plot <- preco25 |>
+  filter(embalagem %in% c("Garrafão", "Garrafa plástica")) |>
+  mutate(embalagem = factor(embalagem, levels = c("Garrafa plástica", "Garrafão")))
+
+p <- ggplot(preco_plot, aes(rs_l, embalagem, fill = embalagem)) +
+  ggiraph::geom_col_interactive(
+    aes(tooltip = paste0("<b>", embalagem, "</b><br>R$ ", n_br(rs_l, 2), " por litro"),
+        data_id = embalagem),
+    width = 0.5
+  ) +
+  geom_text(aes(label = paste0("R$ ", number(rs_l, accuracy = 0.01, decimal.mark = ","), "/L")),
+            hjust = 0, nudge_x = 0.03, size = 3.6, fontface = "bold", colour = TINTA) +
+  scale_fill_manual(values = unname(PAL[c(1, 2)])) +
+  scale_x_continuous(limits = c(0, max(preco_plot$rs_l) * 1.3)) +
+  theme(panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(colour = TINTA, size = rel(1))) +
+  labs(
+    title = paste0("O litro em garrafa custa ",
+                   number(p_plastica / p_garrafao, accuracy = 0.1, decimal.mark = ","),
+                   "x o litro em garrafão"),
+    subtitle = paste0("Preço médio de venda declarado, ", ANO_FIM),
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ", SNAPSHOT, ".")
+  )
+
+interativo(p, altura = 3.2)
+```
+
+Em `r ANO_FIM` o litro vendido em garrafão saiu a **R\$
+`r number(p_garrafao, accuracy = 0.01, decimal.mark = ",")`**; em
+garrafa plástica, **R\$
+`r number(p_plastica, accuracy = 0.01, decimal.mark = ",")`** —
+`r number(p_plastica / p_garrafao, accuracy = 0.1, decimal.mark = ",")`
+vezes mais.
+
+A leitura importa. O produto é o mesmo; o que se cobra é a conveniência
+da embalagem individual. Para o produtor, migrar volume do garrafão para
+a garrafa é multiplicar a receita por litro. **O incentivo econômico
+aponta na direção contrária à do resíduo** — e nada no preço faz o
+produtor pagar pelo destino da embalagem depois do consumo.
+
+## Um aviso: 2024 não aconteceu
+
+Antes de usar esta série para qualquer coisa, é preciso olhar para 2024.
+
+```{r}
+#| label: tbl-2024
+#| tbl-cap: "Volume nacional e participação do garrafão nos anos recentes"
+share |>
+  filter(ano >= 2022) |>
+  select(ano, grupo, pct) |>
+  pivot_wider(names_from = grupo, values_from = pct) |>
+  left_join(vol_ano, by = "ano") |>
+  transmute(Ano = ano, `Volume (bi L)` = bi,
+            `Garrafão` = Garrafão / 100,
+            `Garrafa plástica` = `Garrafa plástica` / 100) |>
+  tabela_amb() |>
+  fmt_br(`Volume (bi L)`, decimais = 1) |>
+  fmt_pct_br(c(`Garrafão`, `Garrafa plástica`)) |>
+  gt::fmt_number(columns = Ano, decimals = 0, use_seps = FALSE)
+```
+
+Em 2024 o volume nacional salta
+`r number(100 * (v(2024) / v(2023) - 1), accuracy = 0.1, decimal.mark = ",")`%
+e no ano seguinte cai
+`r number(100 * (v(2025) / v(2024) - 1), accuracy = 0.1, decimal.mark = ",")`%,
+voltando para perto do patamar de 2023. A participação do garrafão
+desaba e se recupera no mesmo movimento.
+
+Consumo de água não se comporta assim. A causa está concentrada em um
+estado:
+
+```{r}
+#| label: tbl-sp
+#| tbl-cap: "São Paulo: volume declarado de água mineral"
+sp |> filter(ano >= 2022) |>
+  transmute(Ano = ano, `Volume (bi L)` = bi) |>
+  tabela_amb() |>
+  fmt_br(`Volume (bi L)`, decimais = 2) |>
+  gt::fmt_number(columns = Ano, decimals = 0, use_seps = FALSE)
+```
+
+São Paulo vai de
+`r number(sp_v(2023), accuracy = 0.01, decimal.mark = ",")` bilhões de
+litros para `r number(sp_v(2024), accuracy = 0.01, decimal.mark = ",")`
+e volta a `r number(sp_v(2025), accuracy = 0.01, decimal.mark = ",")` —
+sobe
+`r number(100 * (sp_v(2024) / sp_v(2023) - 1), accuracy = 1, decimal.mark = ",")`%
+e retorna para **abaixo** de onde começou. Sozinho, o estado responde
+por cerca de
+`r number(100 * (sp_v(2024) - sp_v(2023)) / (v(2024) - v(2023)), accuracy = 1, decimal.mark = ",")`%
+do salto nacional.
+
+Isso é artefato de declaração, não de mercado. O AMB é montado a partir
+do Relatório Anual de Lavra, preenchido pela própria empresa, e a ANM
+reescreve os arquivos diariamente conforme chegam retificações. **O ano
+de 2024 provavelmente ainda vai mudar** — e quem citar o número de hoje
+como definitivo vai estar citando uma versão, não um fato.
+
+A tendência de longo prazo sobrevive ao problema: ela aparece em quinze
+anos e não depende de nenhum ano isolado. O nível de qualquer ano
+específico, não.
+
+## Limites desta leitura
+
+- **É produção declarada, não consumo.** Água envasada em SP e bebida em
+  GO conta como SP. A série não mede consumo estadual.
+- **Não há preço deflacionado.** Toda comparação de preço aqui é entre
+  embalagens **dentro do mesmo ano**, o que dispensa deflator. Séries de
+  preço ao longo dos quinze anos exigiriam IPCA e não foram feitas.
+- **Zero é ambíguo.** A grade é perfeita — 27 UFs ×
+  `r ANO_FIM - ANO_INI + 1` anos, sem lacuna. Isso significa que "não
+  produziu" e "não declarou" viram o mesmo zero.
+- **Retornável não é reciclado.** O garrafão tem vida longa, mas também
+  vira resíduo. O dado não permite calcular massa de plástico — só
+  volume de água por tipo de embalagem.
+
+::: callout-note
+## Reprodução
+
+Dados: ANM, [Anuário Mineral
+Brasileiro](https://dadosabertos.anm.gov.br/AMB/), snapshot de
+`r SNAPSHOT`. A ANM atualiza esses arquivos diariamente; o snapshot com
+checksum está versionado no repositório do projeto. Código em
+`code/01_ler.R`.
+:::

@@ -1,0 +1,79 @@
+---
+title: "Anuário Mineral Brasileiro"
+subtitle: "O que uma base declaratória reescrita todo dia consegue — e não consegue — dizer"
+lang: pt-BR
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr); library(arrow); library(gt)
+source(here::here("code", "tema.R"))
+b <- read_parquet(dados("producao_bruta.parquet"))
+a <- read_parquet(dados("agua_mineral.parquet"))
+```
+
+O [Anuário Mineral Brasileiro](https://dadosabertos.anm.gov.br/AMB/) é publicado
+pela Agência Nacional de Mineração a partir do **Relatório Anual de Lavra (RAL)** —
+declaração preenchida pela própria mineradora. Cobre `r min(b$ano)` a `r max(b$ano)`,
+por unidade da federação e substância mineral.
+
+Duas características definem o que dá para fazer com ele:
+
+**É declaratório.** O número não é medido por um órgão; é informado por quem
+produz e depois depurado pela ANM. Erros de declaração entram na série e
+permanecem até alguém retificar.
+
+**É reescrito diariamente.** A ANM atualiza os arquivos todo dia para refletir
+novas declarações e correções. O valor de 2015 publicado hoje não é
+necessariamente o de 2015 publicado em 2016.
+
+A consequência prática organiza este projeto: **um download sem data não é um
+dado.** Cada extração é guardada em pasta datada com checksum, e as análises
+declaram sobre qual snapshot foram feitas. Este site foi construído sobre o
+snapshot de **`r SNAPSHOT`**.
+
+## Artigos
+
+[A água mineral trocou de embalagem — e a conta é de plástico](artigos/01-agua-mineral.qmd)
+: O AMB classifica água mineral como substância mineral, e com isso registra em
+  que embalagem ela foi vendida. Vira, sem querer, a melhor série pública sobre
+  migração do vasilhame retornável para o descartável.
+
+[Como uma linha errada quadruplica a produção nacional de brita](artigos/02-auditoria-agregados.qmd)
+: Um roteiro de quatro testes de coerência para bases declaratórias, aplicado aos
+  agregados da construção civil — onde um único registro inflado dispara a série
+  nacional.
+
+[A água mineral ficou mais barata — e a média esconde o quanto](artigos/03-preco-real.qmd)
+: O preço do litro quase dobrou em quinze anos e, descontada a inflação, caiu. Cada
+  embalagem caiu mais que o agregado, porque a migração de vasilhame empurrou a
+  média para cima e mascarou metade do barateamento.
+
+[Nem toda tonelada vale o mesmo](artigos/04-valor-por-tonelada.qmd)
+: A coluna óbvia de valor de venda contém 4% do dinheiro do setor, e a coluna de
+  quantidade mistura toneladas com quilos. Corrigidas as duas coisas, dois terços
+  do valor mineral brasileiro saem de uma substância só.
+
+## Os dados
+
+```{r}
+#| label: tbl-arquivos
+#| echo: false
+tibble::tibble(
+  Arquivo = c("Produção bruta", "Produção beneficiada", "Água mineral"),
+  Linhas = c(nrow(b),
+             nrow(read_parquet(dados("producao_beneficiada.parquet"))),
+             nrow(a)),
+  Granularidade = c("ano × UF × substância", "ano × UF × substância",
+                    "ano × UF × embalagem")
+) |>
+  tabela_amb() |>
+  fmt_br(Linhas, decimais = 0)
+```
+
+É **por UF, não por município**. A produção municipal é um conjunto separado da
+ANM — o que importa para quem quiser cruzar com repasse de CFEM, que é municipal.
+
+Ver o [dicionário de dados](dicionario_de_dados.qmd) para as armadilhas
+documentadas antes de reusar qualquer coisa daqui.

@@ -1,0 +1,289 @@
+---
+title: "A água mineral ficou mais barata — e a média esconde o quanto"
+subtitle: "O preço do litro quase dobrou em quinze anos. Descontada a inflação, caiu — e caiu mais em cada embalagem do que no agregado"
+date: last-modified
+categories: [método, série histórica, inflação, mineração]
+lang: pt-BR
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(ggplot2)
+library(scales)
+library(gt)
+library(ggiraph)
+source(here::here("code", "tema.R"))
+
+agua <- read_parquet(dados("agua_mineral.parquet"))
+defl <- deflator()
+
+ANO_INI <- min(agua$ano); ANO_FIM <- max(agua$ano)
+
+d <- agua |> left_join(defl, by = "ano")
+
+# preco medio nacional, nominal e em reais do ano-base
+nac <- d |>
+  group_by(ano) |>
+  summarise(nominal = sum(valor_rs) / sum(litros),
+            real    = sum(valor_rs) / sum(litros) * first(fator),
+            .groups = "drop")
+
+n <- function(a, col) nac[[col]][nac$ano == a]
+var_pct <- function(x, y) 100 * (y / x - 1)
+
+# inflacao do periodo, a partir do proprio deflator
+ipca_bruto <- read_parquet(dados("ipca.parquet"))
+ipca_per <- var_pct(ipca_bruto$indice[ipca_bruto$ano == ANO_INI],
+                    ipca_bruto$indice[ipca_bruto$ano == ANO_FIM])
+
+# preco real por embalagem
+emb <- d |>
+  group_by(ano, embalagem) |>
+  summarise(real = sum(valor_rs) / sum(litros) * first(fator), .groups = "drop")
+
+e <- function(g, a) emb$real[emb$embalagem == g & emb$ano == a]
+
+# indice de peso fixo: pesos de volume do primeiro ano, congelados
+peso0 <- d |>
+  filter(ano == ANO_INI) |>
+  group_by(embalagem) |>
+  summarise(w = sum(litros), .groups = "drop") |>
+  mutate(w = w / sum(w))
+
+fixo <- emb |>
+  left_join(peso0, by = "embalagem") |>
+  group_by(ano) |>
+  summarise(fixo = sum(real * w, na.rm = TRUE), .groups = "drop")
+
+cmp <- left_join(nac, fixo, by = "ano")
+f <- function(a) cmp$fixo[cmp$ano == a]
+
+# dispersao entre UFs, garrafao, ano final
+puf <- d |>
+  filter(ano == ANO_FIM, embalagem == "Garrafão", litros > 0) |>
+  mutate(rs_l = valor_rs / litros,
+         share = 100 * litros / sum(litros))
+```
+
+Entre `r ANO_INI` e `r ANO_FIM`, o litro de água mineral vendido no Brasil passou
+de **R$ `r number(n(ANO_INI, "nominal"), accuracy = 0.001, decimal.mark = ",")`**
+para **R$ `r number(n(ANO_FIM, "nominal"), accuracy = 0.001, decimal.mark = ",")`** —
+uma alta de
+`r number(var_pct(n(ANO_INI, "nominal"), n(ANO_FIM, "nominal")), accuracy = 0.1, decimal.mark = ",")`%.
+
+Lido assim, o número sugere que a água encareceu bastante. Ele não sustenta essa
+leitura. No mesmo período o IPCA acumulou
+`r number(ipca_per, accuracy = 0.1, decimal.mark = ",")`%.
+
+## O preço subiu menos que tudo o mais
+
+```{r}
+#| label: fig-nominal-real
+#| fig-height: 4.2
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de linhas comparando o preço médio do litro de água mineral em reais correntes e em reais de 2025. A série nominal sobe de forma contínua; a série deflacionada cai até o início da década de 2020 e se recupera parcialmente no fim."
+serie <- nac |>
+  pivot_longer(c(nominal, real), names_to = "tipo", values_to = "rs") |>
+  mutate(tipo = recode(tipo,
+                       nominal = "Reais correntes",
+                       real    = paste0("Reais de ", ANO_FIM)))
+
+rot <- serie |> filter(ano == ANO_FIM)
+
+p <- ggplot(serie, aes(ano, rs, colour = tipo)) +
+  geom_line(linewidth = 0.9) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", ano, "</b><br>", tipo, ": R$ ", n_br(rs, 3)),
+        data_id = tipo), size = 2.1) +
+  geom_text(data = rot, aes(label = tipo), hjust = 0, nudge_x = 0.25,
+            size = 3.4, fontface = "bold", show.legend = FALSE) +
+  scale_colour_manual(values = unname(PAL[c(1, 2)])) +
+  scale_x_continuous(breaks = seq(ANO_INI, ANO_FIM, 5),
+                     limits = c(ANO_INI, ANO_FIM + 6)) +
+  scale_y_continuous(labels = label_number(prefix = "R$ ", accuracy = 0.01,
+                                           decimal.mark = ","),
+                     limits = c(0, NA)) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "A alta do preço é menor que a da inflação",
+    subtitle = "Preço médio do litro de água mineral vendida, Brasil",
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL), snapshot de ",
+                     SNAPSHOT, ". Deflator: IPCA (BCB/SGS 433), snapshot de ",
+                     SNAPSHOT_IPCA, ".")
+  )
+
+interativo(p, altura = 4.2)
+```
+
+Em reais de `r ANO_FIM`, o litro saiu de
+**R$ `r number(n(ANO_INI, "real"), accuracy = 0.001, decimal.mark = ",")`** para
+**R$ `r number(n(ANO_FIM, "real"), accuracy = 0.001, decimal.mark = ",")`**:
+uma queda de
+**`r number(abs(var_pct(n(ANO_INI, "real"), n(ANO_FIM, "real"))), accuracy = 0.1, decimal.mark = ",")`%**.
+
+O produto não encareceu. Ficou mais barato em relação ao restante do orçamento das
+famílias. É a diferença entre ler um número e ler um preço — e ela inverte a
+conclusão.
+
+## A queda é maior do que o agregado registra
+
+Aqui o dado fica mais interessante, porque o agregado e seus componentes discordam.
+
+```{r}
+#| label: tbl-embalagem
+#| tbl-cap: "Preço real por embalagem, em reais do ano-base"
+emb |>
+  filter(ano %in% c(ANO_INI, ANO_FIM)) |>
+  pivot_wider(names_from = ano, values_from = real) |>
+  mutate(var = .data[[as.character(ANO_FIM)]] / .data[[as.character(ANO_INI)]] - 1) |>
+  arrange(var) |>
+  rename(Embalagem = embalagem) |>
+  tabela_amb() |>
+  fmt_br(c(as.character(ANO_INI), as.character(ANO_FIM)), decimais = 3) |>
+  fmt_pct_br(var, decimais = 1) |>
+  gt::cols_label(var = "Variação real") |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = Embalagem %in% c("Garrafão", "Garrafa plástica"))
+  )
+```
+
+As duas embalagens que respondem por quase todo o volume caíram **mais** que o
+agregado: o garrafão
+`r number(abs(var_pct(e("Garrafão", ANO_INI), e("Garrafão", ANO_FIM))), accuracy = 0.1, decimal.mark = ",")`%
+e a garrafa plástica
+`r number(abs(var_pct(e("Garrafa plástica", ANO_INI), e("Garrafa plástica", ANO_FIM))), accuracy = 0.1, decimal.mark = ",")`%,
+contra
+`r number(abs(var_pct(n(ANO_INI, "real"), n(ANO_FIM, "real"))), accuracy = 0.1, decimal.mark = ",")`%
+no total.
+
+Como todo componente relevante cai mais que o conjunto? Porque o conjunto não é só
+preço — é preço **e** composição. Ao longo do período o volume migrou do garrafão
+para a garrafa plástica, que custa muito mais por litro. A mistura ficou mais cara
+enquanto cada item ficava mais barato, e o agregado registra os dois efeitos
+somados.
+
+Para separá-los, basta congelar os pesos de `r ANO_INI` e deixar variar só o preço:
+
+```{r}
+#| label: tbl-decomposicao
+#| tbl-cap: "Preço real do litro: efeito de preço e efeito de composição"
+tibble(
+  Medida = c(paste("Observado (composição de cada ano)"),
+             paste("Pesos de", ANO_INI, "congelados")),
+  `Início` = c(n(ANO_INI, "real"), f(ANO_INI)),
+  `Fim` = c(n(ANO_FIM, "real"), f(ANO_FIM)),
+  Variação = c(var_pct(n(ANO_INI, "real"), n(ANO_FIM, "real")) / 100,
+               var_pct(f(ANO_INI), f(ANO_FIM)) / 100)
+) |>
+  tabela_amb() |>
+  fmt_br(c(`Início`, Fim), decimais = 3) |>
+  fmt_pct_br(Variação, decimais = 1) |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = 2)
+  )
+```
+
+Com a composição de `r ANO_INI` mantida fixa, a queda real seria de
+**`r number(abs(var_pct(f(ANO_INI), f(ANO_FIM))), accuracy = 0.1, decimal.mark = ",")`%**,
+e não de
+`r number(abs(var_pct(n(ANO_INI, "real"), n(ANO_FIM, "real"))), accuracy = 0.1, decimal.mark = ",")`%.
+A diferença de
+`r number(abs(var_pct(f(ANO_INI), f(ANO_FIM))) - abs(var_pct(n(ANO_INI, "real"), n(ANO_FIM, "real"))), accuracy = 0.1, decimal.mark = ",")`
+pontos percentuais é o efeito de composição isolado: é quanto a migração de
+embalagem empurrou a média para cima, mascarando a queda de preço.
+
+**A média nacional subestima a barateamento pela metade.** Quem tomasse o agregado
+como resposta erraria não o sinal, mas a magnitude — e por muito.
+
+## E não existe um preço, existem vinte e sete
+
+O agregado esconde uma segunda coisa: a média nacional não descreve bem nenhum
+estado em particular.
+
+```{r}
+#| label: fig-uf
+#| fig-height: 6
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de pontos do preço médio do litro de água mineral em garrafão por unidade da federação em 2025, ordenado do mais barato ao mais caro. Os valores vão de cerca de dez centavos a cerca de cinquenta e cinco centavos por litro."
+p <- ggplot(puf, aes(rs_l, reorder(uf, rs_l))) +
+  geom_segment(aes(x = median(puf$rs_l), xend = rs_l, yend = reorder(uf, rs_l)),
+               colour = GRADE, linewidth = 0.6) +
+  geom_vline(xintercept = median(puf$rs_l), colour = EIXO, linewidth = 0.4) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", uf, "</b><br>R$ ", n_br(rs_l, 3), " por litro",
+                         "<br>", n_br(share, 1), "% do volume nacional"),
+        data_id = uf), colour = PAL[["slot1"]], size = 2.2) +
+  scale_x_continuous(labels = label_number(prefix = "R$ ", accuracy = 0.01,
+                                           decimal.mark = ","),
+                     limits = c(0, NA)) +
+  theme(panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(colour = TINTA_2, size = rel(0.8)),
+        plot.margin = margin(6, 12, 6, 6)) +
+  labs(
+    title = "O mesmo litro, preços muito diferentes",
+    subtitle = paste0("Preço médio do litro em garrafão, por UF, ", ANO_FIM,
+                      " — linha vertical é a mediana nacional"),
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ",
+                     SNAPSHOT, ".")
+  )
+
+interativo(p, altura = 6)
+```
+
+O litro em garrafão custa
+**R$ `r number(min(puf$rs_l), accuracy = 0.001, decimal.mark = ",")`** na UF mais
+barata e **R$ `r number(max(puf$rs_l), accuracy = 0.001, decimal.mark = ",")`** na
+mais cara — `r number(max(puf$rs_l) / min(puf$rs_l), accuracy = 0.1, decimal.mark = ",")`
+vezes. A mediana nacional é
+R$ `r number(median(puf$rs_l), accuracy = 0.001, decimal.mark = ",")`.
+
+Antes de transformar isso em ranking, uma ressalva que muda a leitura: **os
+extremos são mercados pequenos.** A UF mais cara responde por
+`r number(puf$share[which.max(puf$rs_l)], accuracy = 0.1, decimal.mark = ",")`% do
+volume nacional de garrafão. Preço médio calculado sobre volume pequeno é
+instável, e uma diferença de
+`r number(max(puf$rs_l) / min(puf$rs_l), accuracy = 0.1, decimal.mark = ",")`x entre
+pontas diz menos do que parece.
+
+O padrão robusto está na correlação, não nas pontas: quanto maior o volume
+produzido, menor o preço por litro (correlação de
+`r number(cor(log(puf$rs_l), log(puf$litros)), accuracy = 0.01, decimal.mark = ",")`
+entre os logaritmos). É o que se espera de escala e concorrência — e sugere que a
+água é cara onde se produz pouco, não onde se produz muito.
+
+## Limites desta leitura
+
+- **É preço de produtor, não de varejo.** O valor declarado é o da venda pela
+  fonte envasadora. O que o consumidor paga inclui distribuição, varejo e
+  tributos, que não estão aqui. A queda real medida é na saída da fábrica.
+- **Deflacionar exige escolher um índice.** Usei o IPCA cheio, que é a inflação
+  do consumidor. Um índice de insumos industriais daria outra resposta, e a
+  pergunta seria outra: aqui interessa o preço da água contra o custo de vida.
+- **A média anual do índice, não dezembro.** Os valores do AMB são fluxos do ano
+  inteiro, então o deflator correto é a média do índice ao longo dos doze meses.
+  Usar dezembro superestimaria a correção.
+- **É produção, não consumo.** Água envasada em um estado e bebida em outro conta
+  no estado de origem. O gráfico por UF descreve onde a água é **envasada e
+  vendida pela fonte**, não onde é bebida — e por isso não se presta a leitura
+  per capita nem a cruzamento com acesso a água tratada.
+- **`r ANO_FIM - 1` continua sendo um ano suspeito.** O
+  [artigo sobre embalagens](01-agua-mineral.qmd) mostra que o volume de
+  `r ANO_FIM - 1` é inflado por um artefato de declaração em São Paulo. As
+  conclusões aqui são de tendência de quinze anos e não dependem dele, mas o
+  nível de qualquer ano isolado, sim.
+
+::: {.callout-note}
+## Reprodução
+
+Dados: ANM, [Anuário Mineral Brasileiro](https://dadosabertos.anm.gov.br/AMB/),
+snapshot de `r SNAPSHOT`. Deflator: IPCA, série 433 do
+[SGS/Banco Central](https://www3.bcb.gov.br/sgspub/), snapshot de
+`r SNAPSHOT_IPCA`. Ambos versionados com checksum em `dados_brutos/`.
+Código em `code/01_ler.R` e `code/02_ipca.R`.
+:::

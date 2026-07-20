@@ -1,0 +1,384 @@
+---
+title: "Como uma linha errada quadruplica a produção nacional de brita"
+subtitle: "Um roteiro de auditoria para bases declaratórias, usando os agregados da construção civil como caso"
+date: last-modified
+categories: [mão na massa, método, qualidade de dado, mineração]
+lang: pt-BR
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(ggplot2)
+library(scales)
+library(gt)
+library(ggiraph)
+source(here::here("code", "tema.R"))
+
+bruta <- read_parquet(dados("producao_bruta.parquet"))
+
+AGREG <- c("Areia", "Rochas (Britadas) e Cascalho", "Argilas")
+ANO_FIM <- max(bruta$ano); ANO_INI <- min(bruta$ano)
+
+nac <- bruta |>
+  filter(substancia %in% AGREG) |>
+  group_by(ano, substancia) |>
+  summarise(mt = sum(rom_t, na.rm = TRUE) / 1e6, .groups = "drop")
+
+pega <- function(s, a) nac$mt[nac$substancia == s & nac$ano == a]
+
+sc <- bruta |>
+  filter(uf == "SC", substancia == "Rochas (Britadas) e Cascalho") |>
+  transmute(ano, rom_mt = rom_t / 1e6, venda_mt = venda_t / 1e6,
+            razao = venda_t / rom_t) |>
+  arrange(ano)
+sc_v <- function(a, col = "rom_mt") sc[[col]][sc$ano == a]
+
+# brita nacional excluindo SC, para saber como o setor andou sem a linha suspeita
+br_sem_sc <- bruta |>
+  filter(substancia == "Rochas (Britadas) e Cascalho", uf != "SC") |>
+  group_by(ano) |>
+  summarise(mt = sum(rom_t, na.rm = TRUE) / 1e6, .groups = "drop")
+
+maiores <- bruta |>
+  arrange(desc(rom_t)) |>
+  transmute(ano, uf, substancia, rom_mt = rom_t / 1e6) |>
+  head(4)
+
+ferro <- bruta |> filter(substancia == "Ferro", ano == ANO_FIM) |>
+  summarise(rom = sum(rom_t, na.rm = TRUE) / 1e6,
+            venda = sum(venda_t, na.rm = TRUE) / 1e6,
+            venda_bi = sum(venda_rs, na.rm = TRUE) / 1e9)
+```
+
+Areia, brita e argila não têm o glamour do minério de ferro, mas são o insumo
+físico da construção civil — e o outro lado da moeda do resíduo de construção,
+que é a fração mais pesada do que os serviços de limpeza urbana recolhem. A série
+do Anuário Mineral Brasileiro cobre esses três desde `r ANO_INI`.
+
+Ao abrir a série, a primeira coisa que aparece não é uma tendência. É um erro.
+
+## O que a série diz — e onde ela quebra
+
+```{r}
+#| label: fig-nacional
+#| fig-height: 4.2
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de linhas da produção nacional de areia, argilas e rochas britadas entre 2010 e 2025, em milhões de toneladas. Areia e argilas crescem devagar; rochas britadas sobem de forma estável até 2024 e então saltam verticalmente em 2025."
+rot <- nac |> filter(ano == ANO_FIM) |>
+  mutate(nome = recode(substancia, "Rochas (Britadas) e Cascalho" = "Rochas britadas"))
+
+p <- ggplot(nac, aes(ano, mt, colour = substancia)) +
+  geom_line(linewidth = 0.9) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", ano, "</b><br>", substancia, ": ",
+                         n_br(mt, 1), " Mt"), data_id = substancia), size = 2.1) +
+  geom_text(data = rot, aes(label = nome), hjust = 0, nudge_x = 0.25,
+            size = 3.4, fontface = "bold", show.legend = FALSE) +
+  scale_colour_manual(values = unname(PAL[c(1, 3, 2)])) +
+  scale_x_continuous(breaks = seq(ANO_INI, ANO_FIM, 5), limits = c(ANO_INI, ANO_FIM + 5.5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "Um salto que nenhuma obra explica",
+    subtitle = "Produção bruta (ROM) declarada, em milhões de toneladas",
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ", SNAPSHOT, ".")
+  )
+
+interativo(p, altura = 4.2)
+```
+
+Areia e argila crescem devagar, com a queda de 2015–2018 que se espera de um ciclo
+de construção. Rochas britadas acompanham — até `r ANO_FIM`, quando a série sai
+de `r number(pega("Rochas (Britadas) e Cascalho", ANO_FIM - 1), accuracy = 1, big.mark = ".", decimal.mark = ",")`
+para `r number(pega("Rochas (Britadas) e Cascalho", ANO_FIM), accuracy = 1, big.mark = ".", decimal.mark = ",")`
+milhões de toneladas.
+
+O país não quadruplicou sua produção de brita em um ano.
+
+## Quatro testes que localizam o problema
+
+Nenhum deles exige conhecer mineração. São testes de coerência interna, e valem
+para qualquer base declaratória.
+
+### 1. A variação é plausível contra o próprio histórico?
+
+```{r}
+#| label: fig-sc
+#| fig-height: 3.8
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de linha da produção de rochas britadas em Santa Catarina de 2010 a 2025. A série cresce de forma suave de 14 para 38 milhões de toneladas e então dispara verticalmente para mais de mil milhões de toneladas em 2025."
+p <- ggplot(sc, aes(ano, rom_mt)) +
+  geom_line(linewidth = 0.9, colour = PAL[["slot1"]]) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", ano, "</b><br>ROM: ", n_br(rom_mt, 1), " Mt",
+                         "<br>Venda: ", n_br(venda_mt, 2), " Mt",
+                         "<br>Venda/ROM: ", n_br(100 * razao, 2), "%"),
+        data_id = ano), size = 2.4, colour = PAL[["slot1"]]) +
+  geom_text(data = filter(sc, ano == ANO_FIM),
+            aes(label = paste0(number(rom_mt, accuracy = 1, big.mark = ".", decimal.mark = ","), " Mt")),
+            hjust = 1.15, vjust = -0.8, size = 3.5, fontface = "bold", colour = TINTA) +
+  scale_x_continuous(breaks = seq(ANO_INI, ANO_FIM, 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(
+    title = "Santa Catarina, rochas britadas: 15 anos e um degrau",
+    subtitle = "Produção bruta declarada, em milhões de toneladas",
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ", SNAPSHOT, ".")
+  )
+
+interativo(p, altura = 3.8)
+```
+
+Santa Catarina declara `r number(sc_v(ANO_FIM - 1), accuracy = 0.1, decimal.mark = ",")`
+milhões de toneladas em `r ANO_FIM - 1` e
+`r number(sc_v(ANO_FIM), accuracy = 1, big.mark = ".", decimal.mark = ",")` em
+`r ANO_FIM` — um fator de
+**`r number(sc_v(ANO_FIM) / sc_v(ANO_FIM - 1), accuracy = 0.1, decimal.mark = ",")`x**
+em um ano, contra quinze anos de crescimento suave.
+
+### 2. O valor é plausível contra o resto da base?
+
+```{r}
+#| label: tbl-maiores
+#| tbl-cap: "As maiores declarações de produção bruta de toda a série"
+maiores |>
+  transmute(Ano = ano, UF = uf, Substância = substancia, `ROM (Mt)` = rom_mt) |>
+  tabela_amb() |>
+  fmt_br(`ROM (Mt)`, decimais = 0) |>
+  gt::fmt_number(columns = Ano, decimals = 0, use_seps = FALSE) |>
+  # a linha anomala, que o texto discute logo abaixo
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = UF == "SC")
+  )
+```
+
+A linha de Santa Catarina é a **maior declaração de produção bruta dos
+`r ANO_FIM - ANO_INI + 1` anos da série** — maior que qualquer ano de minério de
+ferro em Minas Gerais. Uma pedreira catarinense não produz mais tonelagem que o
+quadrilátero ferrífero.
+
+### 3. As colunas são coerentes entre si?
+
+```{r}
+#| label: tbl-razao
+#| tbl-cap: "Santa Catarina, rochas britadas: produção contra venda declarada"
+sc |> filter(ano >= ANO_FIM - 3) |>
+  transmute(Ano = ano, `ROM (Mt)` = rom_mt, `Venda (Mt)` = venda_mt,
+            `Venda / ROM` = razao) |>
+  tabela_amb() |>
+  fmt_br(`ROM (Mt)`, decimais = 1) |>
+  fmt_br(`Venda (Mt)`, decimais = 2) |>
+  fmt_pct_br(`Venda / ROM`, decimais = 2) |>
+  gt::fmt_number(columns = Ano, decimals = 0, use_seps = FALSE) |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = Ano == ANO_FIM)
+  )
+```
+
+Se a produção fosse real, a venda deveria acompanhar. Ela não acompanha: passa de
+`r number(sc_v(ANO_FIM - 1, "venda_mt"), accuracy = 0.01, decimal.mark = ",")` para
+`r number(sc_v(ANO_FIM, "venda_mt"), accuracy = 0.01, decimal.mark = ",")` milhões de
+toneladas — menos que o dobro — enquanto o ROM cresce
+`r number(sc_v(ANO_FIM) / sc_v(ANO_FIM - 1), accuracy = 0.1, decimal.mark = ",")`x.
+A razão venda/ROM despenca de
+`r percent(sc_v(ANO_FIM - 1, "razao"), accuracy = 0.01, decimal.mark = ",")` para
+`r percent(sc_v(ANO_FIM, "razao"), accuracy = 0.01, decimal.mark = ",")`.
+
+**As colunas do mesmo registro discordam entre si.** É a assinatura de erro de
+digitação ou de unidade — a produção foi inflada, a venda não.
+
+### 4. Um único registro domina o agregado?
+
+```{r}
+#| label: tbl-peso
+#| tbl-cap: "Peso de uma linha no total nacional de rochas britadas"
+br <- c(pega("Rochas (Britadas) e Cascalho", ANO_FIM - 1),
+        pega("Rochas (Britadas) e Cascalho", ANO_FIM))
+catarina <- c(sc_v(ANO_FIM - 1), sc_v(ANO_FIM))
+
+tibble(
+  Ano = c(ANO_FIM - 1, ANO_FIM),
+  `Brasil (Mt)` = br,
+  `SC (Mt)` = catarina,
+  `SC no total` = catarina / br
+) |>
+  tabela_amb() |>
+  fmt_br(c(`Brasil (Mt)`, `SC (Mt)`), decimais = 0) |>
+  fmt_pct_br(`SC no total`, decimais = 1) |>
+  gt::fmt_number(columns = Ano, decimals = 0, use_seps = FALSE) |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = Ano == ANO_FIM)
+  )
+```
+
+Santa Catarina sai de
+`r percent(sc_v(ANO_FIM - 1) / pega("Rochas (Britadas) e Cascalho", ANO_FIM - 1), accuracy = 0.1, decimal.mark = ",")`
+para
+`r percent(sc_v(ANO_FIM) / pega("Rochas (Britadas) e Cascalho", ANO_FIM), accuracy = 0.1, decimal.mark = ",")`
+do total nacional. Quando uma unidade da federação responde por quatro quintos de
+um agregado nacional, o agregado deixou de descrever o país e passou a descrever
+aquela linha.
+
+### Uma hipótese sobre o mecanismo
+
+Auditoria que só aponta o erro para na metade. A pergunta seguinte é **como** o
+número errado se formou — e aqui os dígitos sugerem uma resposta.
+
+```{r}
+#| label: tbl-hipotese
+#| tbl-cap: "O valor declarado e a leitura sem o prefixo"
+declarado <- bruta |>
+  filter(uf == "SC", substancia == "Rochas (Britadas) e Cascalho", ano == ANO_FIM) |>
+  pull(rom_t)
+
+# remove os dois digitos iniciais do valor declarado
+hipot <- as.numeric(substring(format(declarado, scientific = FALSE), 3))
+
+sc_ant <- sc_v(ANO_FIM - 1) * 1e6
+razao_hip <- sc$venda_mt[sc$ano == ANO_FIM] * 1e6 / hipot
+razao_hist <- range(sc$razao[sc$ano < ANO_FIM])
+
+tibble(
+  Leitura = c("Como declarado", "Sem o prefixo \"11\"", paste("Declarado em", ANO_FIM - 1)),
+  `ROM (t)` = c(declarado, hipot, sc_ant)
+) |>
+  tabela_amb() |>
+  fmt_br(`ROM (t)`, decimais = 0) |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = 2)
+  )
+```
+
+Retirando os dois primeiros dígitos de
+`r number(declarado, big.mark = ".", decimal.mark = ",")`, sobra
+**`r number(hipot, big.mark = ".", decimal.mark = ",")`** — e os **sete dígitos
+finais são idênticos** nas duas leituras. Não é um arredondamento nem um erro de
+unidade: tem a forma de um prefixo digitado a mais.
+
+O resultado é coerente com a série. `r number(hipot / 1e6, accuracy = 0.1, decimal.mark = ",")` Mt
+representa
+`r number(100 * (hipot / sc_ant - 1), accuracy = 0.1, decimal.mark = ",")`%
+sobre `r ANO_FIM - 1` — uma queda leve, num ano em que o resto do país também
+recuou `r number(100 * (br_sem_sc$mt[br_sem_sc$ano == ANO_FIM] / br_sem_sc$mt[br_sem_sc$ano == ANO_FIM - 1] - 1), accuracy = 0.1, decimal.mark = ",")`%.
+Uma pedreira catarinense produzindo 36 Mt é um fato comum; produzindo 1.136 Mt, não.
+
+**Mas a hipótese não fecha o teste 3.** Com esse ROM, a razão venda/ROM iria a
+`r percent(razao_hip, accuracy = 0.01, decimal.mark = ",")`, acima do máximo
+histórico do estado, de
+`r percent(razao_hist[2], accuracy = 0.01, decimal.mark = ",")`. Para cair dentro
+da faixa observada, o ROM precisaria estar por volta de 42 Mt — e nenhuma
+manipulação simples de dígitos leva a esse valor.
+
+Ou seja: a conjectura explica a *forma* do erro e devolve a ordem de grandeza,
+mas não reconcilia todas as colunas. Ela é a melhor explicação disponível, não uma
+resposta confirmada. Confirmá-la exige a ANM ou a declaração original — nada no
+arquivo aberto permite fechar a questão.
+
+**Uma suposição plausível continua sendo uma suposição.** Ela entra no texto como
+hipótese nomeada e testável, não como número substituído: a série publicada aqui
+segue sem o registro, não com ele corrigido.
+
+## O que fazer com isso
+
+O erro **não** invalida a série. Ele invalida `r ANO_FIM` para rochas britadas.
+Areia e argila seguem utilizáveis, e a série de brita até `r ANO_FIM - 1` também.
+
+A conduta correta é excluir o registro e dizer que excluiu:
+
+```{r}
+#| label: fig-corrigido
+#| fig-height: 4
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de linhas da produção nacional dos três agregados com o registro anômalo de Santa Catarina removido. As três séries voltam a ter escalas comparáveis e rochas britadas mostra crescimento contínuo."
+nac_c <- bruta |>
+  filter(substancia %in% AGREG,
+         !(uf == "SC" & substancia == "Rochas (Britadas) e Cascalho" & ano == ANO_FIM)) |>
+  group_by(ano, substancia) |>
+  summarise(mt = sum(rom_t, na.rm = TRUE) / 1e6, .groups = "drop")
+
+rot_c <- nac_c |> filter(ano == ANO_FIM) |>
+  mutate(nome = recode(substancia, "Rochas (Britadas) e Cascalho" = "Rochas britadas"))
+
+p <- ggplot(nac_c, aes(ano, mt, colour = substancia)) +
+  geom_line(linewidth = 0.9) +
+  ggiraph::geom_point_interactive(
+    aes(tooltip = paste0("<b>", ano, "</b><br>", substancia, ": ",
+                         n_br(mt, 1), " Mt"), data_id = substancia), size = 2.1) +
+  geom_text(data = rot_c, aes(label = nome), hjust = 0, nudge_x = 0.25,
+            size = 3.4, fontface = "bold", show.legend = FALSE) +
+  scale_colour_manual(values = unname(PAL[c(1, 3, 2)])) +
+  scale_x_continuous(breaks = seq(ANO_INI, ANO_FIM, 5), limits = c(ANO_INI, ANO_FIM + 5.5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "A mesma série, sem o registro anômalo",
+    subtitle = paste0("Produção bruta declarada, em milhões de toneladas — excluída a linha SC/",
+                      ANO_FIM, " de rochas britadas"),
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ", SNAPSHOT,
+                     ". Um registro removido por inconsistência interna.")
+  )
+
+interativo(p, altura = 4)
+```
+
+Sem a linha, a série volta a se comportar e o crescimento dos agregados aparece
+pelo que é: contínuo e moderado.
+
+Com uma ressalva que precisa ficar explícita: **remover o registro remove também a
+produção real de Santa Catarina.** O estado de fato produz brita — cerca de
+`r number(sc_v(ANO_FIM - 1), accuracy = 0.1, decimal.mark = ",")` milhões de
+toneladas em `r ANO_FIM - 1`. Ao descartar a linha inteira, o total nacional de
+`r ANO_FIM` fica **subestimado**, e é por isso que a curva parece recuar naquele
+ano. O ponto de `r ANO_FIM` deve ser lido como piso, não como valor corrigido.
+
+Exclusão não é correção. Corrigir exigiria saber qual era o número certo, e o
+arquivo não permite saber. A escolha honesta é remover, declarar a remoção e
+marcar o ano como não comparável — não estimar um substituto e apresentá-lo como
+dado.
+
+## Um segundo tropeço, mais silencioso
+
+Há uma armadilha nessa base que não produz gráfico esquisito — e por isso é pior.
+
+A coluna `Valor Venda` da produção bruta **não mede o tamanho do setor**. Em
+`r ANO_FIM`, o minério de ferro registra
+`r number(ferro$rom, accuracy = 1, big.mark = ".", decimal.mark = ",")` milhões de
+toneladas de ROM, mas apenas
+`r number(ferro$venda, accuracy = 1, decimal.mark = ",")` milhões de toneladas de
+venda, somando R$ `r number(ferro$venda_bi, accuracy = 0.01, decimal.mark = ",")`
+bilhões. O motivo é estrutural: quase todo o minério de ferro é **transferido para
+beneficiamento** dentro da própria empresa, não vendido bruto. O valor econômico
+aparece na base de produção beneficiada, não nesta.
+
+Quem ordenar as substâncias por `Valor Venda` na produção bruta vai concluir que
+rocha ornamental vale mais que ferro no Brasil. Nada no arquivo avisa que a
+conclusão está errada.
+
+## O roteiro, em resumo
+
+1. **Variação contra o próprio histórico** — um fator de 30x em um ano é hipótese
+   de erro até prova em contrário.
+2. **Valor contra o resto da base** — o novo recorde é plausível diante do que a
+   base já viu?
+3. **Coerência entre colunas do mesmo registro** — quando produção e venda
+   discordam, uma das duas está errada.
+4. **Concentração** — se uma linha carrega o agregado, o agregado é sobre ela.
+
+Nenhum depende de domínio setorial. Todos deveriam rodar antes do primeiro
+gráfico.
+
+::: {.callout-note}
+## Reprodução
+
+Dados: ANM, [Anuário Mineral Brasileiro](https://dadosabertos.anm.gov.br/AMB/),
+snapshot de `r SNAPSHOT`. A ANM atualiza esses arquivos diariamente — a anomalia
+descrita aqui pode ter sido corrigida depois desta data, o que é exatamente o
+motivo de o snapshot estar versionado com checksum. Código em `code/01_ler.R`.
+:::

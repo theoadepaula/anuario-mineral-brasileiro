@@ -1,0 +1,32 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Anuário Mineral Brasileiro"
+  description: "Quanto o passado oficial se move numa série declaratória reescrita todo dia"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Sobre o projeto
+      - href: dicionario_de_dados.qmd
+        text: Dicionário de dados
+      - text: Artigos
+        menu:
+          - artigos/01-agua-mineral.qmd
+          - artigos/02-auditoria-agregados.qmd
+          - artigos/03-preco-real.qmd
+          - artigos/04-valor-por-tonelada.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+    code-tools: true
+    lang: pt-BR
+
+execute:
+  freeze: auto
+  warning: false
+  message: false

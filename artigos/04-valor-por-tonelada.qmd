@@ -1,0 +1,277 @@
+---
+title: "Nem toda tonelada vale o mesmo"
+subtitle: "O Brasil extrai bilhões de toneladas de minério, mas dois terços do dinheiro saem de uma substância só — e a coluna óbvia da base leva à resposta errada"
+date: last-modified
+categories: [dados abertos, qualidade de dado, método, mineração]
+lang: pt-BR
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(ggplot2)
+library(scales)
+library(gt)
+library(ggiraph)
+source(here::here("code", "tema.R"))
+
+bruta <- read_parquet(dados("producao_bruta.parquet"))
+benef <- read_parquet(dados("producao_beneficiada.parquet"))
+
+ANO <- max(benef$ano)
+
+br <- bruta |> filter(ano == ANO)
+be <- benef |> filter(ano == ANO)
+
+# quanto dinheiro cada arquivo declara
+val_bruta <- sum(br$venda_rs, na.rm = TRUE)
+val_benef <- sum(be$venda_rs, na.rm = TRUE)
+
+# unidades convivem no mesmo arquivo: somar quantidade entre elas seria invalido
+unid <- be |>
+  filter(venda_rs > 0) |>
+  group_by(venda_unidade) |>
+  summarise(linhas = n(), rs = sum(venda_rs), .groups = "drop") |>
+  arrange(desc(rs))
+
+# metrica so onde a unidade e tonelada
+ton <- be |> filter(venda_unidade == "t", venda_qtd > 0, venda_rs > 0)
+share_ton <- 100 * sum(ton$venda_rs) / val_benef
+
+# o que ficou de fora, em kg
+fora <- be |> filter(venda_unidade == "kg", venda_rs > 0)
+
+por_subst <- ton |>
+  group_by(substancia) |>
+  summarise(rs = sum(venda_rs), q = sum(venda_qtd), .groups = "drop") |>
+  mutate(rs_t = rs / q, share = 100 * rs / sum(rs)) |>
+  arrange(desc(rs_t))
+
+por_uf <- ton |>
+  group_by(uf) |>
+  summarise(rs = sum(venda_rs), q = sum(venda_qtd), .groups = "drop") |>
+  mutate(rs_t = rs / q) |>
+  arrange(desc(rs_t))
+
+u <- function(x, col) por_uf[[col]][por_uf$uf == x]
+s <- function(x, col) por_subst[[col]][por_subst$substancia == x]
+
+ferro <- ton |> filter(substancia == "Ferro")
+ferro_share <- 100 * sum(ferro$venda_rs) / sum(ton$venda_rs)
+```
+
+Uma pergunta natural para quem olha dados de mineração é qual estado ganha mais
+com a extração. A base do Anuário Mineral tem uma coluna chamada *valor de venda*,
+e o caminho óbvio é somá-la por unidade da federação.
+
+Esse caminho leva à resposta errada — e o tamanho do erro é instrutivo.
+
+## A coluna óbvia contém 4% do dinheiro
+
+O AMB publica dois arquivos: produção **bruta**, o minério como sai da mina, e
+produção **beneficiada**, o mesmo material depois de processado. Os dois têm uma
+coluna de valor de venda. Elas não são comparáveis em magnitude:
+
+```{r}
+#| label: tbl-arquivos
+#| tbl-cap: "Valor de venda declarado em cada arquivo"
+tibble(
+  Arquivo = c("Produção bruta", "Produção beneficiada"),
+  `Valor de venda (R$)` = c(val_bruta, val_benef),
+  `Participação` = c(val_bruta, val_benef) / (val_bruta + val_benef)
+) |>
+  tabela_amb() |>
+  fmt_br(`Valor de venda (R$)`, decimais = 0) |>
+  fmt_pct_br(`Participação`, decimais = 1) |>
+  gt::tab_style(
+    style = gt::cell_text(color = TINTA, weight = "bold"),
+    locations = gt::cells_body(rows = 2)
+  )
+```
+
+A razão é econômica, não estatística. A maior parte do minério de valor não é
+vendida bruta: é **transferida internamente** para o beneficiamento da própria
+empresa e vendida depois, já processada. A venda na boca da mina é quase toda de
+material de baixo valor e consumo local — areia, brita, argila.
+
+O efeito é que a coluna de valor da bruta descreve o negócio de agregados da
+construção civil, não o setor mineral. Em Minas Gerais,
+`r number(100 * (be$venda_rs[be$uf == "MG"] |> sum()) / (sum(be$venda_rs[be$uf == "MG"]) + sum(br$venda_rs[br$uf == "MG"])), accuracy = 0.1, decimal.mark = ",")`%
+do valor está na beneficiada; no Pará,
+`r number(100 * (be$venda_rs[be$uf == "PA"] |> sum()) / (sum(be$venda_rs[be$uf == "PA"]) + sum(br$venda_rs[br$uf == "PA"])), accuracy = 0.1, decimal.mark = ",")`%.
+
+**Um ranking construído sobre a bruta não erra por pouco: erra por uma ordem de
+grandeza.** Daqui em diante, tudo usa a beneficiada.
+
+## Antes de dividir, conferir a unidade
+
+Há uma segunda armadilha, e ela é do tipo que passa despercebido porque não gera
+erro nenhum — só um número sem sentido.
+
+```{r}
+#| label: tbl-unidades
+#| tbl-cap: "As unidades convivem no mesmo arquivo e na mesma coluna"
+unid |>
+  transmute(Unidade = venda_unidade, Linhas = linhas, `Valor (R$)` = rs) |>
+  tabela_amb() |>
+  fmt_br(c(Linhas, `Valor (R$)`), decimais = 0)
+```
+
+A coluna de quantidade vendida da beneficiada mistura **toneladas, quilogramas e
+quilates** na mesma coluna, distinguidos apenas por uma coluna vizinha de unidade.
+Somar essa coluna sem filtrar produz um total que não é tonelada nem quilo — é a
+soma de coisas diferentes, e nenhuma verificação automática reclama.
+
+Por isso tudo o que vem a seguir se restringe às linhas em tonelada, que
+concentram `r number(share_ton, accuracy = 0.1, decimal.mark = ",")`% do valor do
+arquivo.
+
+O que fica de fora precisa ser dito, não escondido: as linhas em quilograma somam
+**R$ `r number(sum(fora$venda_rs) / 1e9, accuracy = 0.1, decimal.mark = ",")` bilhões**,
+`r number(100 * sum(fora$venda_rs) / val_benef, accuracy = 0.1, decimal.mark = ",")`%
+do valor total, quase tudo
+`r por_subst_fora <- fora |> count(substancia, wt = venda_rs, sort = TRUE); tolower(por_subst_fora$substancia[1])`.
+Ouro não entra nas contas por tonelada abaixo — e um texto que o omitisse estaria
+descrevendo um setor mineral sem o segundo produto mais valioso do país.
+
+## Duas ordens de grandeza entre substâncias
+
+```{r}
+#| label: fig-substancia
+#| fig-height: 5.4
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de pontos em escala logarítmica do valor por tonelada vendida de cada substância mineral em 2025. Os valores vão de cerca de quarenta reais por tonelada para areia e argila a dezenas de milhares de reais por tonelada para cobre e níquel."
+top <- por_subst |> filter(share > 0.1 | rs_t > 5000) |> arrange(rs_t)
+
+p <- ggplot(top, aes(rs_t, reorder(substancia, rs_t))) +
+  geom_segment(aes(x = min(top$rs_t), xend = rs_t, yend = reorder(substancia, rs_t)),
+               colour = GRADE, linewidth = 0.6) +
+  ggiraph::geom_point_interactive(
+    aes(size = share,
+        tooltip = paste0("<b>", substancia, "</b><br>R$ ", n_br(rs_t, 0), " por tonelada",
+                         "<br>", n_br(share, 1), "% do valor total"),
+        data_id = substancia), colour = PAL[["slot1"]]) +
+  scale_x_log10(labels = label_number(prefix = "R$ ", big.mark = ".",
+                                      decimal.mark = ",", accuracy = 1)) +
+  scale_size_area(max_size = 6) +
+  theme(panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(colour = TINTA_2, size = rel(0.8)),
+        plot.margin = margin(6, 12, 6, 6)) +
+  labs(
+    title = "O valor por tonelada varia em duas ordens de grandeza",
+    subtitle = paste0("Valor de venda por tonelada vendida, produção beneficiada, ", ANO,
+                      "\nTamanho do ponto: participação no valor total. Escala horizontal logarítmica"),
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ",
+                     SNAPSHOT, ". Apenas linhas com unidade em tonelada.")
+  )
+
+interativo(p, altura = 5.4)
+```
+
+A areia sai a
+**R$ `r number(s("Areia", "rs_t"), accuracy = 0.1, decimal.mark = ",")` por tonelada**;
+o cobre, a
+**R$ `r number(s("Cobre", "rs_t"), big.mark = ".", decimal.mark = ",", accuracy = 1)`**.
+A mediana entre substâncias é
+R$ `r number(median(por_subst$rs_t), big.mark = ".", decimal.mark = ",", accuracy = 1)`.
+
+Mas o gráfico traz uma segunda informação, no tamanho dos pontos: **as substâncias
+mais valiosas por tonelada quase não pesam no total.** O que domina o valor é o
+ferro, com
+`r number(ferro_share, accuracy = 0.1, decimal.mark = ",")`%
+do dinheiro em toneladas — a
+R$ `r number(sum(ferro$venda_rs) / sum(ferro$venda_qtd), accuracy = 0.1, decimal.mark = ",")`
+por tonelada, valor modesto compensado por volume enorme.
+
+O setor mineral brasileiro, medido em dinheiro, é essencialmente **uma substância
+com dois estados**.
+
+## O mapa que sai disso
+
+```{r}
+#| label: fig-uf
+#| fig-height: 5.8
+#| fig-width: 7.5
+#| fig-alt: "Gráfico de pontos do valor por tonelada vendida em cada unidade da federação em 2025, ordenado do maior para o menor. Pará lidera com cerca de 470 reais por tonelada e Pernambuco fica na base, com cerca de 11 reais."
+p <- ggplot(por_uf, aes(rs_t, reorder(uf, rs_t))) +
+  geom_segment(aes(x = 0, xend = rs_t, yend = reorder(uf, rs_t)),
+               colour = GRADE, linewidth = 0.6) +
+  ggiraph::geom_point_interactive(
+    aes(size = rs / 1e9,
+        tooltip = paste0("<b>", uf, "</b><br>R$ ", n_br(rs_t, 1), " por tonelada",
+                         "<br>R$ ", n_br(rs / 1e9, 1), " bi vendidos"),
+        data_id = uf), colour = PAL[["slot2"]]) +
+  scale_x_continuous(labels = label_number(prefix = "R$ ", big.mark = ".",
+                                           decimal.mark = ",", accuracy = 1)) +
+  scale_size_area(max_size = 7) +
+  theme(panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(colour = TINTA_2, size = rel(0.8)),
+        plot.margin = margin(6, 12, 6, 6)) +
+  labs(
+    title = "Pará extrai menos que Minas e fatura mais por tonelada",
+    subtitle = paste0("Valor de venda por tonelada vendida, por UF, ", ANO,
+                      "\nTamanho do ponto: valor total vendido"),
+    caption = paste0("Fonte: ANM, Anuário Mineral Brasileiro (RAL). Snapshot de ",
+                     SNAPSHOT, ". Apenas linhas com unidade em tonelada.")
+  )
+
+interativo(p, altura = 5.8)
+```
+
+O Pará vende a
+**R$ `r number(u("PA", "rs_t"), accuracy = 0.1, decimal.mark = ",")` por tonelada**
+e Minas Gerais a
+**R$ `r number(u("MG", "rs_t"), accuracy = 0.1, decimal.mark = ",")`** — os dois
+maiores em valor absoluto, com R$
+`r number(u("PA", "rs") / 1e9, accuracy = 0.1, decimal.mark = ",")` e R$
+`r number(u("MG", "rs") / 1e9, accuracy = 0.1, decimal.mark = ",")` bilhões. Na
+outra ponta, Pernambuco vende a
+R$ `r number(u("PE", "rs_t"), accuracy = 0.1, decimal.mark = ",")` a tonelada.
+
+A tentação aqui é ler o eixo como desempenho: estados "eficientes" no topo,
+"ineficientes" na base. **É a leitura errada.** O que o eixo mede é *o que existe
+no subsolo e o que se decidiu extrair*. Pernambuco produz gesso e agregados;
+o Pará produz minério de ferro e cobre. Nenhuma política estadual move esse
+ponteiro no curto prazo, porque a geologia não responde a decreto.
+
+O que a comparação de fato mostra é **quão desigual é a base econômica da
+mineração entre estados** — e que agregar "o setor mineral" num número nacional
+mistura atividades sem quase nada em comum, exceto a licença.
+
+## Limites desta leitura
+
+- **É receita, não lucro.** Não há coluna de custo em nenhum arquivo do AMB.
+  Nada aqui autoriza dizer quem *ganha* mais com a extração, apenas quem
+  **fatura** mais. Custo de extração varia enormemente entre substâncias, e é
+  justamente o que falta para responder à pergunta original.
+- **O que fica no território é a CFEM, e ela não está aqui.** A Compensação
+  Financeira pela Exploração de Recursos Minerais é o que efetivamente chega a
+  estados e municípios — e é distribuída por **município**, num conjunto de dados
+  separado da ANM. Quem quiser responder "quem se beneficia" precisa daquele
+  conjunto, não deste.
+- **Reais nominais, e um ano só.** Todo o texto se refere a `r ANO`. Não há
+  comparação temporal aqui, então não há deflator; ver o
+  [artigo sobre preço real](03-preco-real.qmd) para o que muda quando há.
+- **`r number(100 - share_ton, accuracy = 0.1, decimal.mark = ",")`% do valor ficou
+  fora** por não estar em toneladas — sobretudo ouro. As conclusões valem para o
+  setor medido em massa, não para o setor inteiro.
+- **A base é declaratória e `r ANO` é o ano mais recente.** É o ano-base que mais
+  deve se mover nos próximos snapshots. O
+  [artigo de auditoria](02-auditoria-agregados.qmd) mostra um registro deste mesmo
+  ano que não sobrevive a quatro testes de coerência — e que foi excluído das
+  contas de volume aqui.
+- **Uma chave duplicada.** Em `r ANO` a beneficiada tem
+  `r sum(be |> count(uf, substancia) |> pull(n) > 1)` par (UF, substância) com mais
+  de uma linha. Os totais aqui somam as linhas, tratamento adequado para esse caso;
+  ver o [dicionário](../dicionario_de_dados.qmd).
+
+::: {.callout-note}
+## Reprodução
+
+Dados: ANM, [Anuário Mineral Brasileiro](https://dadosabertos.anm.gov.br/AMB/),
+snapshot de `r SNAPSHOT`, versionado com checksum em `dados_brutos/`.
+Código em `code/01_ler.R`.
+:::

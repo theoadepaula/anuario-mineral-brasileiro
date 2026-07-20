@@ -1,0 +1,124 @@
+---
+title: "Dicionário de dados"
+subtitle: "O que cada coluna significa e onde a base engana"
+lang: pt-BR
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(dplyr); library(arrow); library(gt)
+source(here::here("code", "tema.R"))
+b <- read_parquet(dados("producao_bruta.parquet"))
+be <- read_parquet(dados("producao_beneficiada.parquet"))
+a <- read_parquet(dados("agua_mineral.parquet"))
+```
+
+Snapshot descrito: **`r SNAPSHOT`**. Origem:
+[dadosabertos.anm.gov.br/AMB](https://dadosabertos.anm.gov.br/AMB/).
+
+## Formato da origem
+
+```{r}
+#| label: tbl-formato
+#| echo: false
+tibble::tribble(
+  ~Item,          ~Valor,
+  "Codificação",  "Windows-1252 (CP-1252)",
+  "Delimitador",  "vírgula — **a ficha de metadados afirma ponto-e-vírgula e está errada**",
+  "Decimal",      "vírgula (todos os campos vêm entre aspas)",
+  "Atualização",  "diária"
+) |>
+  tabela_amb() |>
+  gt::fmt_markdown(columns = Valor)
+```
+
+Ler com `sep = ";"` falha em silêncio. O script `code/01_ler.R` lê tudo como texto
+e converte à mão justamente por isso.
+
+## `producao_bruta.parquet`
+
+`r format(nrow(b), big.mark = ".", decimal.mark = ",")` linhas. Produção ROM — minério como sai da mina.
+
+```{r}
+#| label: tbl-colunas
+#| echo: false
+tibble::tribble(
+  ~Coluna, ~Significado,
+  "`ano`", "ano-base da declaração",
+  "`uf`", "unidade da federação",
+  "`classe`", "Metálicos, Não-Metálicos, Energéticos, Gemas e Diamantes",
+  "`substancia`", "substância mineral declarada",
+  "`rom_t`", "produção bruta (run-of-mine), toneladas",
+  "`contido_qtd`, `contido_unidade`, `contido_indicacao`", "quantidade do óxido/metal contido e qual é",
+  "`venda_t`, `venda_rs`", "quantidade e valor vendidos",
+  "`transformacao_t`, `transformacao_rs`", "consumido/transformado na própria mina",
+  "`transferencia_t`, `transferencia_rs`", "transferido para transformação fora da mina",
+  "`metalico`", "derivada: `classe == \"Metálicos\"`"
+) |>
+  tabela_amb() |>
+  gt::fmt_markdown(columns = everything())
+```
+
+## `producao_beneficiada.parquet`
+
+`r format(nrow(be), big.mark = ".", decimal.mark = ",")` linhas, mesma chave, minério após
+beneficiamento. **Não somar com a bruta** — são estágios do mesmo material.
+
+Das `r n_distinct(be$substancia)` substâncias aqui,
+`r length(intersect(b$substancia, be$substancia))` também estão na bruta.
+
+## `agua_mineral.parquet`
+
+`r format(nrow(a), big.mark = ".", decimal.mark = ",")` linhas, formato longo
+(`r n_distinct(a$uf)` UFs × `r n_distinct(a$ano)` anos × `r n_distinct(a$embalagem)`
+embalagens). Colunas: `ano`, `uf`, `embalagem`, `litros`, `valor_rs`.
+O formato largo original está em `agua_mineral_largo.parquet`.
+
+## Armadilhas
+
+**`(ano, uf, substancia)` não é chave única.** Há duas causas distintas, e a regra
+de agregação depende de qual:
+
+- *Óxido contido.* A mesma substância declarada uma vez por óxido — Columbita-Tantalita
+  aparece com `Ta2O5` e com `Nb2O5`. Em 10 dos 39 grupos desse tipo, `rom_t` e
+  `venda_rs` são **idênticos** nas duas linhas: somar duplica a tonelagem. Nos
+  outros 29 os valores diferem, e somar é correto. **Não existe regra única — só
+  afeta metálicos.**
+- *Registros distintos sem dimensão exportada.* 33 grupos com `contido_indicacao`
+  vazio e quantidades diferentes. Parecem produções separadas colapsadas na mesma
+  chave; somar é o tratamento adequado.
+
+Os artigos deste site tratam apenas de não-metálicos, onde só o segundo caso
+ocorre.
+
+**`venda_rs` na bruta não mede o tamanho do setor.** Substâncias transferidas
+internamente para beneficiamento registram venda quase nula. Ordenar por essa
+coluna coloca rocha ornamental acima do minério de ferro. O valor está na
+beneficiada.
+
+**Zero é ambíguo.** Na água mineral a grade é perfeita, sem lacuna: "não produziu"
+e "não declarou" viram o mesmo zero.
+
+**Acre não existe na beneficiada** em nenhum dos `r n_distinct(be$ano)` anos.
+Presente na bruta.
+
+**Reais nominais.** Nenhuma coluna é deflacionada. Comparações de valor ao longo
+dos anos exigem IPCA; comparações dentro do mesmo ano, não.
+
+**Lixo de ponto flutuante na origem.** Valores como `2400373,5300000003`.
+Arredondar antes de comparar snapshots, ou toda linha parecerá revisada.
+
+**Erros de declaração permanecem na base.** Ver o
+[artigo de auditoria](artigos/02-auditoria-agregados.qmd) para um caso ativo neste
+snapshot: uma linha de rochas britadas em SC que quadruplica o total nacional.
+
+## Reprodução
+
+```bash
+Rscript code/01_ler.R    # lê o snapshot mais recente, grava dados/*.parquet
+quarto render            # gera o site
+```
+
+`dados/` é derivada: pode ser apagada e refeita. `dados_brutos/<data>/` nunca deve
+ser sobrescrita — é a única evidência de como a base estava naquele dia.
