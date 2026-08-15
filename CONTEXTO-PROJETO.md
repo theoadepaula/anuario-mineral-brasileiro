@@ -69,6 +69,23 @@ escolhe a fonte errada.
   não escolha estética. O rosa fica abaixo de 3:1 de contraste sobre fundo
   branco, então **todo gráfico traz rótulo direto** — a identidade da série nunca
   depende só da cor.
+- ✅ **Decidido em 2026-08-15:** o tema passa a pedir ao `theoviz` o **modo
+  escuro** — `paleta(3, modo = "escuro")`, `tinta(modo = "escuro")` e
+  `tabela_amb()` com `modo = "escuro"`. Os artigos vão ao ar em página escura e
+  pediam as cores do modo claro: figura de fundo quase branco dentro de página
+  quase preta, e tabela `gt` com `background-color: #FFFFFF` cravado **inline**.
+  - ⚠️ **O tooltip do `ggiraph` não segue o tema, e é de propósito.** Ele fazia
+    `background: TINTA` com `color: #fcfcfb`. Enquanto `TINTA` era tinta
+    **escura**, era texto claro sobre fundo escuro e funcionava; ao virar o
+    modo, `TINTA` passou a ser cinza **claro** (`#dde1e6`) e o mesmo par viraria
+    branco sobre branco. Um tooltip flutua *acima* da figura, então ele quer a
+    **chapa** do sistema visual do site — `site("chapa")` —, não a tinta de
+    texto. Sombra e raio saíram junto: o sistema separa plano por superfície e
+    filete.
+  - Exige `theoviz` ≥ 0.3.0. Depois de mexer no tema, re-renderizar **tudo** no
+    repo do site: apagar `quarto/_freeze/` e rodar `npm run build:quarto`
+    (`quarto render --no-freeze` **não existe** no Quarto 1.9 — falha o render
+    inteiro).
 - **Caminhos normalizados para `here::here()` em 2026-07-19.** Antes o projeto
   usava `rprojroot::find_rstudio_root_file()`, divergindo dos outros dois. Nove
   ocorrências em oito arquivos. Não reintroduzir `rprojroot`.
