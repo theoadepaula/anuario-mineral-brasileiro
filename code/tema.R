@@ -30,8 +30,13 @@ deflator <- function() {
 
 # As cores vem do pacote theoviz, fonte unica dos tres projetos -- nao literais
 # aqui. Os NOMES locais sao preservados: os quatro artigos dependem deles.
-.p <- paleta(3)
-.t <- tinta()
+#
+# MODO ESCURO (2026-08-15): os artigos vao ao ar em pagina escura e ate aqui
+# pediam ao theoviz as cores do modo CLARO -- o que punha figura de fundo quase
+# branco dentro de pagina quase preta. Contra o chao do site (#0d1014) os slots
+# medem 5,24 / 3,86 / 4,83; todos acima do piso de 3:1.
+.p <- paleta(3, modo = "escuro")
+.t <- tinta(modo = "escuro")
 
 PAL <- c(slot1 = unname(.p[["s1"]]), slot2 = unname(.p[["s2"]]),
          slot3 = unname(.p[["s3"]]))
@@ -80,11 +85,17 @@ interativo <- function(p, altura = 4.2, largura = 7.5) {
       # realce por serie: passar o mouse em um ponto acende a serie inteira
       ggiraph::opts_hover(css = "stroke-width:3.5;"),
       ggiraph::opts_hover_inv(css = "opacity:0.25;"),
+      # O tooltip NAO segue o TINTA/TINTA_2 do tema. Enquanto o modo era claro,
+      # `background: TINTA` era tinta escura com texto quase branco por cima e
+      # funcionava. Ao virar o modo, TINTA passou a ser cinza CLARO (#dde1e6) e
+      # o mesmo par viraria branco sobre branco -- ilegivel. Um tooltip flutua
+      # acima da figura, entao ele quer a chapa do site, nao a tinta de texto.
       ggiraph::opts_tooltip(
         css = paste0(
-          "background:", TINTA, ";color:#fcfcfb;padding:6px 9px;",
-          "border-radius:8px;font-family:system-ui,sans-serif;font-size:12.5px;",
-          "line-height:1.45;box-shadow:0 6px 20px rgba(0,0,0,.22);"
+          "background:", site("chapa"), ";color:", site("titulo"), ";",
+          "border:1px solid ", site("filete"), ";padding:7px 10px;",
+          "border-radius:0;font-family:'IBM Plex Sans',system-ui,sans-serif;",
+          "font-size:12.5px;line-height:1.45;"
         ),
         opacity = 1, use_fill = FALSE
       ),
@@ -113,8 +124,12 @@ n_br <- function(x, dec = 1) {
 # arvore do OneDrive e quebraria ao migrar para o site).
 
 # Nome local preservado: os quatro artigos e o dicionario chamam tabela_amb(x, nota).
+#
+# O `modo = "escuro"` nao e detalhe: sem ele o gt crava `background-color:
+# #FFFFFF` inline, e nenhuma folha de estilo derruba estilo inline. Toda tabela
+# destes artigos ia ao ar como retangulo branco no meio da pagina escura.
 tabela_amb <- function(x, nota = NULL) {
-  g <- tabela_gt(x, nota = nota)
+  g <- tabela_gt(x, nota = nota, modo = "escuro")
   g
 }
 
