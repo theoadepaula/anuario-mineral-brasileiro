@@ -9,6 +9,7 @@
 
 library(ggplot2)
 suppressPackageStartupMessages(library(theoviz))
+source(here::here("code", "girafe_celular.R"))  # LARGURA_SVG, ajustar_textos()
 
 RAIZ <- here::here()
 dados <- function(arq) file.path(RAIZ, "dados", arq)
@@ -54,8 +55,8 @@ EIXO       <- unname(.t[["eixo"]])
 # cor_texto(colour))) no geom_text -- o stage() e obrigatorio: um after_scale()
 # sozinho apaga o mapeamento e o texto sai preto. Linhas, pontos e barras
 # continuam em PAL.
-if (packageVersion("theoviz") < "0.4.0")
-  stop("code/tema.R exige theoviz >= 0.4.0 (paleta(uso = \"texto\")).")
+if (packageVersion("theoviz") < "0.4.1")
+  stop("code/tema.R exige theoviz >= 0.4.1 (paleta(uso = \"texto\"), num_br(), fmt_br()).")
 .p_marca <- paleta(modo = "escuro")
 .p_texto <- paleta(modo = "escuro", uso = "texto")
 cor_texto <- function(cor) {
@@ -63,7 +64,7 @@ cor_texto <- function(cor) {
   ifelse(is.na(i), cor, unname(.p_texto)[i])
 }
 
-tema_amb <- function(base_size = 12) {
+tema_amb <- function(base_size = 11) {  # 11, nao 12: ver girafe_celular.R
   theme_minimal(base_size = base_size) +
     theme(
       text             = element_text(colour = TINTA_2),
@@ -94,9 +95,9 @@ theme_set(tema_amb())
 # quebraria a premissa do projeto. O ggiraph renderiza o proprio ggplot em SVG,
 # entao tema, paleta validada, rotulos diretos e caption chegam intactos.
 
-interativo <- function(p, altura = 4.2, largura = 7.5) {
+interativo <- function(p, altura = 4.2, largura = LARGURA_SVG) {
   ggiraph::girafe(
-    ggobj = p, width_svg = largura, height_svg = altura,
+    ggobj = ajustar_textos(p, largura), width_svg = largura, height_svg = altura,
     options = list(
       # realce por serie: passar o mouse em um ponto acende a serie inteira
       ggiraph::opts_hover(css = "stroke-width:3.5;"),
@@ -124,10 +125,9 @@ interativo <- function(p, altura = 4.2, largura = 7.5) {
 # Rotulo de tooltip em portugues, com milhar ponto e decimal virgula.
 dica <- function(...) paste0(...)
 
-n_br <- function(x, dec = 1) {
-  format(round(x, dec), big.mark = ".", decimal.mark = ",",
-         nsmall = dec, trim = TRUE, scientific = FALSE)
-}
+# Nome local preservado (os quatro artigos chamam n_br); o formato vem do
+# theoviz::num_br(). Todas as chamadas passam `dec` explicito.
+n_br <- function(x, dec = 1) num_br(x, dec)
 
 # Tabelas -----------------------------------------------------------------
 # O estilo e o tema CANONICO de todos os projetos, aprovado por Theo em
@@ -149,13 +149,6 @@ tabela_amb <- function(x, nota = NULL) {
   g
 }
 
-# Formatacao numerica brasileira: separador de milhar ponto, decimal virgula.
-fmt_br <- function(g, colunas, decimais = 0) {
-  gt::fmt_number(g, columns = {{ colunas }}, decimals = decimais,
-                 sep_mark = ".", dec_mark = ",")
-}
-
-fmt_pct_br <- function(g, colunas, decimais = 1) {
-  gt::fmt_percent(g, columns = {{ colunas }}, decimals = decimais,
-                  sep_mark = ".", dec_mark = ",")
-}
+# Formatacao numerica brasileira (milhar ponto, decimal virgula): fmt_br() e
+# fmt_pct_br() vem do theoviz, com a mesma assinatura das copias que moravam
+# aqui -- os artigos as chamam sem mudanca.
