@@ -9,6 +9,7 @@
 
 library(ggplot2)
 suppressPackageStartupMessages(library(theoviz))
+source(here::here("code", "girafe_celular.R"))  # LARGURA_SVG, ajustar_textos()
 
 RAIZ <- here::here()
 dados <- function(arq) file.path(RAIZ, "dados", arq)
@@ -63,7 +64,7 @@ cor_texto <- function(cor) {
   ifelse(is.na(i), cor, unname(.p_texto)[i])
 }
 
-tema_amb <- function(base_size = 12) {
+tema_amb <- function(base_size = 11) {  # 11, nao 12: ver girafe_celular.R
   theme_minimal(base_size = base_size) +
     theme(
       text             = element_text(colour = TINTA_2),
@@ -94,9 +95,9 @@ theme_set(tema_amb())
 # quebraria a premissa do projeto. O ggiraph renderiza o proprio ggplot em SVG,
 # entao tema, paleta validada, rotulos diretos e caption chegam intactos.
 
-interativo <- function(p, altura = 4.2, largura = 7.5) {
+interativo <- function(p, altura = 4.2, largura = LARGURA_SVG) {
   ggiraph::girafe(
-    ggobj = p, width_svg = largura, height_svg = altura,
+    ggobj = ajustar_textos(p, largura), width_svg = largura, height_svg = altura,
     options = list(
       # realce por serie: passar o mouse em um ponto acende a serie inteira
       ggiraph::opts_hover(css = "stroke-width:3.5;"),
