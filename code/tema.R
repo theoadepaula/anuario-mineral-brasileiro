@@ -47,6 +47,22 @@ TINTA_MUDA <- unname(.t[["fraca"]])
 GRADE      <- unname(.t[["grade"]])
 EIXO       <- unname(.t[["eixo"]])
 
+# TEXTO NA COR DA SERIE (2026-11-09): o piso de 3:1 vale para marca; texto pede
+# 4,5:1, e o verde s2 (#008300, 3,86:1) nao passa. O theoviz >= 0.4.0 tem
+# `uso = "texto"`, que troca so o verde (#008f56, 4,60:1). Rotulo direto com a
+# cor mapeada da serie: aes(colour = stage(<var>, after_scale =
+# cor_texto(colour))) no geom_text -- o stage() e obrigatorio: um after_scale()
+# sozinho apaga o mapeamento e o texto sai preto. Linhas, pontos e barras
+# continuam em PAL.
+if (packageVersion("theoviz") < "0.4.0")
+  stop("code/tema.R exige theoviz >= 0.4.0 (paleta(uso = \"texto\")).")
+.p_marca <- paleta(modo = "escuro")
+.p_texto <- paleta(modo = "escuro", uso = "texto")
+cor_texto <- function(cor) {
+  i <- match(tolower(cor), tolower(.p_marca))
+  ifelse(is.na(i), cor, unname(.p_texto)[i])
+}
+
 tema_amb <- function(base_size = 12) {
   theme_minimal(base_size = base_size) +
     theme(
